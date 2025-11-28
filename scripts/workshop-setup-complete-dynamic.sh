@@ -346,44 +346,22 @@ chown ec2-user:ec2-user /home/ec2-user/.bashrc
 sleep 300
 
 # Clean up bootstrap incidents from DynamoDB
-LOG_FILE="dynamodb_cleanup_$(date +%Y%m%d_%H%M%S).log"
+echo "🧹 Truncating DynamoDB table: $DYNAMODB_TABLE in region: $REGION"
 
-{
-    echo "=== DynamoDB Cleanup Log - $(date) ==="
-    echo ""
-    echo "🧹 Cleaning up bootstrap incidents from DynamoDB..."
-    
-    # Get both pk and sk
-    ITEMS=$(aws dynamodb scan \
+# Get all keys and delete one by one (simple approach)
+aws dynamodb scan --table-name "$DYNAMODB_TABLE" --region "$REGION" \
+  --query 'Items[].[pk.S, sk.S]' --output text | \
+while IFS=$'\t' read -r pk sk; do
+  if [ -n "$pk" ] && [ -n "$sk" ]; then
+    echo "Deleting: $pk | $sk"
+    aws dynamodb delete-item \
       --table-name "$DYNAMODB_TABLE" \
       --region "$REGION" \
-      --query 'Items[].[pk.S, sk.S]' \
-      --output text)
+      --key "{\"pk\":{\"S\":\"$pk\"},\"sk\":{\"S\":\"$sk\"}}"
+  fi
+done
 
-    echo "Found items:"
-    echo "$ITEMS"
-    
-    if [ -n "$ITEMS" ]; then
-        # Read items line by line (each line has pk and sk)
-        while IFS=$'\t' read -r pk sk; do
-            echo "Deleting item with pk: $pk, sk: $sk"
-            aws dynamodb delete-item \
-              --table-name "$DYNAMODB_TABLE" \
-              --key '{"pk": {"S": "'"$pk"'"}, "sk": {"S": "'"$sk"'"}}' \
-              --region "$REGION"
-            
-            if [ $? -eq 0 ]; then
-                echo "✅ Successfully deleted item with pk: $pk, sk: $sk"
-            else
-                echo "❌ Failed to delete item with pk: $pk, sk: $sk"
-            fi
-        done <<< "$ITEMS"
-        echo "✅ Cleanup completed"
-    else
-        echo "✅ No items to clean"
-    fi
-
-} | tee -a "$LOG_FILE"
+echo "✅ Table truncated"
 
 echo ""
 echo "🎉 Workshop setup completed successfully!"
