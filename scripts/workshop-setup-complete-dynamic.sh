@@ -346,25 +346,22 @@ chown ec2-user:ec2-user /home/ec2-user/.bashrc
 sleep 300
 
 # Clean up bootstrap incidents from DynamoDB
-echo ""
-echo "🧹 Cleaning up bootstrap incidents from DynamoDB..."
-INCIDENT_IDS=$(aws dynamodb scan \
-  --table-name "$DYNAMODB_TABLE" \
-  --region "$REGION" \
-  --query 'Items[].incident_id.S' \
-  --output text 2>/dev/null)
+echo "🧹 Truncating DynamoDB table: $DYNAMODB_TABLE in region: $REGION"
 
-if [ -n "$INCIDENT_IDS" ]; then
-  for incident_id in $INCIDENT_IDS; do
+# Get all keys and delete one by one (simple approach)
+aws dynamodb scan --table-name "$DYNAMODB_TABLE" --region "$REGION" \
+  --query 'Items[].[pk.S, sk.S]' --output text | \
+while IFS=$'\t' read -r pk sk; do
+  if [ -n "$pk" ] && [ -n "$sk" ]; then
+    echo "Deleting: $pk | $sk"
     aws dynamodb delete-item \
       --table-name "$DYNAMODB_TABLE" \
-      --key "{\"incident_id\": {\"S\": \"$incident_id\"}}" \
-      --region "$REGION" 2>/dev/null || true
-  done
-  echo "✅ Cleaned up bootstrap incidents"
-else
-  echo "✅ No bootstrap incidents to clean"
-fi
+      --region "$REGION" \
+      --key "{\"pk\":{\"S\":\"$pk\"},\"sk\":{\"S\":\"$sk\"}}"
+  fi
+done
+
+echo "✅ Table truncated"
 
 echo ""
 echo "🎉 Workshop setup completed successfully!"
