@@ -343,6 +343,185 @@ else
 fi
 
 echo ""
+echo "21. CloudFormation Stack Validation"
+echo "-----------------------------------"
+
+if [ -n "$WORKSHOP_STACK_NAME" ]; then
+    # Check stack status
+    STACK_STATUS=$(aws cloudformation describe-stacks --stack-name "$WORKSHOP_STACK_NAME" --region ${AWS_REGION:-us-west-2} --query 'Stacks[0].StackStatus' --output text 2>/dev/null)
+    
+    if [ -n "$STACK_STATUS" ]; then
+        case "$STACK_STATUS" in
+            "CREATE_COMPLETE"|"UPDATE_COMPLETE")
+                check_pass "CloudFormation stack status: $STACK_STATUS"
+                ;;
+            "CREATE_IN_PROGRESS"|"UPDATE_IN_PROGRESS")
+                check_warn "CloudFormation stack status: $STACK_STATUS (in progress)"
+                ;;
+            *)
+                check_fail "CloudFormation stack status: $STACK_STATUS"
+                ;;
+        esac
+        
+        # Check critical outputs exist
+        MISSING_OUTPUTS=0
+        for output in "DatabaseSecretArn" "DatabaseEndpoint" "MainKnowledgeBaseId" "IDRIncidentTable"; do
+            OUTPUT_VALUE=$(aws cloudformation describe-stacks --stack-name "$WORKSHOP_STACK_NAME" --region ${AWS_REGION:-us-west-2} --query "Stacks[0].Outputs[?OutputKey=='$output'].OutputValue" --output text 2>/dev/null)
+            if [ -n "$OUTPUT_VALUE" ] && [ "$OUTPUT_VALUE" != "None" ]; then
+                check_pass "Stack output '$output' available"
+            else
+                check_warn "Stack output '$output' missing"
+                ((MISSING_OUTPUTS++))
+            fi
+        done
+        
+        if [ $MISSING_OUTPUTS -eq 0 ]; then
+            check_pass "All critical stack outputs available"
+        fi
+        
+    else
+        check_fail "CloudFormation stack '$WORKSHOP_STACK_NAME' not found or not accessible"
+    fi
+else
+    check_warn "WORKSHOP_STACK_NAME not set"
+fi
+
+echo ""
+echo "22. Main Database Connectivity & Extensions"
+echo "-------------------------------------------"
+
+# Source bashrc to get psql functions
+source /home/ec2-user/.bashrc 2>/dev/null
+
+# Test main database connection using alias
+if declare -f psql_main >/dev/null 2>&1; then
+    if psql_main -c "SELECT 1;" >/dev/null 2>&1; then
+        check_pass "Main database connection successful"
+        
+        # Check extensions
+        if psql_main -c "SELECT 1 FROM pg_extension WHERE extname='pg_stat_statements';" | grep -q "1"; then
+            check_pass "Main DB: pg_stat_statements extension installed"
+        else
+            check_fail "Main DB: pg_stat_statements extension missing"
+        fi
+        
+        if psql_main -c "SELECT 1 FROM pg_extension WHERE extname='vector';" | grep -q "1"; then
+            check_pass "Main DB: vector extension installed"
+        else
+            check_fail "Main DB: vector extension missing"
+        fi
+        
+        # Check main database tables and data
+        SALES_COUNT=$(psql_main -t -c "SELECT COUNT(*) FROM sales_data;" 2>/dev/null | tr -d ' ')
+        if [ -n "$SALES_COUNT" ] && [ "$SALES_COUNT" -gt 0 ]; then
+            check_pass "Main DB: sales_data table exists with $SALES_COUNT rows"
+        else
+            check_warn "Main DB: sales_data table missing or empty"
+        fi
+        
+        ORDERS_COUNT=$(psql_main -t -c "SELECT COUNT(*) FROM orders;" 2>/dev/null | tr -d ' ')
+        if [ -n "$ORDERS_COUNT" ] && [ "$ORDERS_COUNT" -gt 0 ]; then
+            check_pass "Main DB: orders table exists with $ORDERS_COUNT rows"
+        else
+            check_warn "Main DB: orders table missing or empty"
+        fi
+        
+    else
+        check_fail "Main database connection failed"
+    fi
+else
+    check_warn "psql_main function not available"
+fi
+
+echo ""
+echo "23. IDR ACU Database Connectivity & Extensions"
+echo "----------------------------------------------"
+
+if declare -f psql_idr_acu >/dev/null 2>&1; then
+    if psql_idr_acu -c "SELECT 1;" >/dev/null 2>&1; then
+        check_pass "IDR ACU database connection successful"
+        
+        # Check extensions only
+        if psql_idr_acu -c "SELECT 1 FROM pg_extension WHERE extname='pg_stat_statements';" | grep -q "1"; then
+            check_pass "IDR ACU: pg_stat_statements extension installed"
+        else
+            check_fail "IDR ACU: pg_stat_statements extension missing"
+        fi
+        
+        if psql_idr_acu -c "SELECT 1 FROM pg_extension WHERE extname='vector';" | grep -q "1"; then
+            check_pass "IDR ACU: vector extension installed"
+        else
+            check_fail "IDR ACU: vector extension missing"
+        fi
+        
+    else
+        check_fail "IDR ACU database connection failed"
+    fi
+else
+    check_warn "psql_idr_acu function not available (may not be deployed)"
+fi
+
+echo ""
+echo "24. IDR IOPS Database Connectivity & Extensions"
+echo "-----------------------------------------------"
+
+if declare -f psql_idr_iops >/dev/null 2>&1; then
+    if psql_idr_iops -c "SELECT 1;" >/dev/null 2>&1; then
+        check_pass "IDR IOPS database connection successful"
+        
+        # Check extensions and pgbench setup
+        if psql_idr_iops -c "SELECT 1 FROM pg_extension WHERE extname='pg_stat_statements';" | grep -q "1"; then
+            check_pass "IDR IOPS: pg_stat_statements extension installed"
+        else
+            check_fail "IDR IOPS: pg_stat_statements extension missing"
+        fi
+        
+        if psql_idr_iops -c "SELECT 1 FROM pg_extension WHERE extname='vector';" | grep -q "1"; then
+            check_pass "IDR IOPS: vector extension installed"
+        else
+            check_fail "IDR IOPS: vector extension missing"
+        fi
+        
+        # Check pgbench tables
+        PGBENCH_COUNT=$(psql_idr_iops -t -c "SELECT COUNT(*) FROM pgbench_accounts;" 2>/dev/null | tr -d ' ')
+        if [ -n "$PGBENCH_COUNT" ] && [ "$PGBENCH_COUNT" -gt 0 ]; then
+            check_pass "IDR IOPS: pgbench data initialized ($PGBENCH_COUNT accounts)"
+        else
+            check_warn "IDR IOPS: pgbench data not initialized"
+        fi
+        
+    else
+        check_fail "IDR IOPS database connection failed"
+    fi
+else
+    check_warn "psql_idr_iops function not available (may not be deployed)"
+fi
+
+echo ""
+echo "25. DynamoDB Table Validation"
+echo "-----------------------------"
+
+if [ -n "$DYNAMODB_TABLE" ]; then
+    aws dynamodb describe-table --table-name "$DYNAMODB_TABLE" --region ${AWS_REGION:-us-west-2} >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        check_pass "DynamoDB table '$DYNAMODB_TABLE' exists"
+        
+        ITEM_COUNT=$(aws dynamodb scan --table-name "$DYNAMODB_TABLE" --region ${AWS_REGION:-us-west-2} --select COUNT --query 'Count' --output text 2>/dev/null)
+        if [ -n "$ITEM_COUNT" ]; then
+            if [ "$ITEM_COUNT" -eq 0 ]; then
+                check_pass "DynamoDB table is empty (ready for incidents)"
+            else
+                check_warn "DynamoDB table contains $ITEM_COUNT items"
+            fi
+        fi
+    else
+        check_fail "DynamoDB table '$DYNAMODB_TABLE' not accessible"
+    fi
+else
+    check_warn "DynamoDB table name not configured"
+fi
+
+echo ""
 echo "============================================"
 echo "Validation Summary"
 echo "============================================"
